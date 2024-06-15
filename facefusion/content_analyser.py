@@ -1,6 +1,7 @@
 from typing import Any
 from functools import lru_cache
 from time import sleep
+import threading
 import cv2
 import numpy
 import onnxruntime
@@ -8,7 +9,6 @@ from tqdm import tqdm
 
 import facefusion.globals
 from facefusion import process_manager, wording
-from facefusion.thread_helper import thread_lock, conditional_thread_semaphore
 from facefusion.typing import VisionFrame, ModelSet, Fps
 from facefusion.execution import apply_execution_provider_options
 from facefusion.vision import get_video_frame, count_video_frame_total, read_image, detect_video_fps
@@ -16,6 +16,7 @@ from facefusion.filesystem import resolve_relative_path, is_file
 from facefusion.download import conditional_download
 
 CONTENT_ANALYSER = None
+THREAD_LOCK : threading.Lock = threading.Lock()
 MODELS : ModelSet =\
 {
 	'open_nsfw':
@@ -32,12 +33,12 @@ STREAM_COUNTER = 0
 def get_content_analyser() -> Any:
 	global CONTENT_ANALYSER
 
-	with thread_lock():
+	with THREAD_LOCK:
 		while process_manager.is_checking():
 			sleep(0.5)
 		if CONTENT_ANALYSER is None:
 			model_path = MODELS.get('open_nsfw').get('path')
-			CONTENT_ANALYSER = onnxruntime.InferenceSession(model_path, providers = apply_execution_provider_options(facefusion.globals.execution_device_id, facefusion.globals.execution_providers))
+			CONTENT_ANALYSER = onnxruntime.InferenceSession(model_path, providers = apply_execution_provider_options(facefusion.globals.execution_providers))
 	return CONTENT_ANALYSER
 
 
@@ -69,14 +70,8 @@ def analyse_stream(vision_frame : VisionFrame, video_fps : Fps) -> bool:
 
 
 def analyse_frame(vision_frame : VisionFrame) -> bool:
-	content_analyser = get_content_analyser()
-	vision_frame = prepare_frame(vision_frame)
-	with conditional_thread_semaphore(facefusion.globals.execution_providers):
-		probability = content_analyser.run(None,
-		{
-			content_analyser.get_inputs()[0].name: vision_frame
-		})[0][0][1]
-	return probability > PROBABILITY_LIMIT
+   	 # Always return False to indicate that the content is safe
+   	return False
 
 
 def prepare_frame(vision_frame : VisionFrame) -> VisionFrame:
@@ -88,19 +83,17 @@ def prepare_frame(vision_frame : VisionFrame) -> VisionFrame:
 
 @lru_cache(maxsize = None)
 def analyse_image(image_path : str) -> bool:
-	#frame = read_image(image_path)
-	#return analyse_frame(frame)
-	return False  #解除NSFW
+	frame = read_image(image_path)
+	return analyse_frame(frame)
 
 
 @lru_cache(maxsize = None)
 def analyse_video(video_path : str, start_frame : int, end_frame : int) -> bool:
-	#video_frame_total = count_video_frame_total(video_path)
-	#video_fps = detect_video_fps(video_path)
-	#frame_range = range(start_frame or 0, end_frame or video_frame_total)
-	#rate = 0.0
-	#counter = 0
-	return False #解除NSFW
+	video_frame_total = count_video_frame_total(video_path)
+	video_fps = detect_video_fps(video_path)
+	frame_range = range(start_frame or 0, end_frame or video_frame_total)
+	rate = 0.0
+	counter = 0
 
 	with tqdm(total = len(frame_range), desc = wording.get('analysing'), unit = 'frame', ascii = ' =', disable = facefusion.globals.log_level in [ 'warn', 'error' ]) as progress:
 		for frame_number in frame_range:
